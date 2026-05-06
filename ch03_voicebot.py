@@ -4,24 +4,32 @@ import openai
 import os
 from datetime import datetime
 from gtts import gTTS
-import base64
+import tempfile  # 다중 사용자 접속 시 파일 충돌 방지용
 
 ##### 기능 함수 #####
 
 def STT(audio, apikey):
-    filename = "input.mp3"
-    audio.export(filename, format="mp3")
+    """사용자의 음성을 텍스트로 변환 (Tempfile 적용)"""
     client = openai.OpenAI(api_key=apikey)
+    
+    # 임시 파일 생성
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
+        filename = fp.name
+        
+    audio.export(filename, format="mp3")
+    
     with open(filename, "rb") as audio_file:
         response = client.audio.transcriptions.create(
             model="whisper-1",
             file=audio_file
         )
-    os.remove(filename)
+        
+    os.remove(filename) # 사용 후 삭제
     return response.text
 
 
 def ask_gpt(messages, model, apikey):
+    """GPT에게 질문하고 답변 받기"""
     client = openai.OpenAI(api_key=apikey)
     response = client.chat.completions.create(
         model=model,
@@ -31,37 +39,47 @@ def ask_gpt(messages, model, apikey):
 
 
 def TTS(text):
-    filename = "output.mp3"
+    """텍스트를 음성으로 변환하고 자동 재생 (Tempfile & st.audio 적용)"""
     tts = gTTS(text=text, lang="ko")
+    
+    # 임시 파일 생성
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
+        filename = fp.name
+        
     tts.save(filename)
+    
+    # 스트림릿 최신 기능으로 자동 재생 (autoplay=True)
     with open(filename, "rb") as f:
-        data = f.read()
-        b64 = base64.b64encode(data).decode()
-        md = f"""
-        <audio autoplay>
-        <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-        </audio>
-        """
-        st.markdown(md, unsafe_allow_html=True)
-    os.remove(filename)
+        audio_bytes = f.read()
+        st.audio(audio_bytes, format="audio/mp3", autoplay=True)
+        
+    os.remove(filename) # 사용 후 삭제
 
 
 ##### 메인 #####
 def main():
-
+    # ── 세션 상태 초기화 ──
     if "chat" not in st.session_state:
         st.session_state["chat"] = []
     if "OPENAI_API" not in st.session_state:
         st.session_state["OPENAI_API"] = ""
-    if "messages" not in st.session_state:
-        st.session_state["messages"] = [
-            {"role": "system", "content": "25단어 이내 한국어로 답변해"}
-        ]
     if "new_question" not in st.session_state:
         st.session_state["new_question"] = False
+        
+    # AI 페르소나(성격) 부여
+    if "messages" not in st.session_state:
+        st.session_state["messages"] = [
+            {"role": "system", "content": """
+            너는 친절하고 전문적인 건강 관리 AI 비서 '아름(AReum)'이야.
+            사용자의 건강, 운동, 식단 관련 질문에 공감하며 따뜻한 말투로 답변해 줘.
+            답변은 모바일 화면에서 읽기 쉽게 3~4문장 이내로 간결하게 정리해 주고, 
+            의학적 진단보다는 일반적인 조언과 가이드를 제공해.
+            """}
+        ]
 
     st.set_page_config(page_title="AReum Health Assistant", layout="wide")
 
+    # ── CSS 스타일링 (빈칸 생김 방지 수정 완료) ──
     st.markdown("""
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;800&family=Noto+Sans+KR:wght@400;500;600&display=swap');
@@ -127,7 +145,7 @@ def main():
             margin-bottom: 1rem;
         }
 
-        /* 카드 - height: 100% 제거하여 빈 공간 방지 */
+        /* 카드 (높이 100% 제거) */
         .card {
             background: rgba(255,255,255,0.75);
             backdrop-filter: blur(12px);
@@ -230,8 +248,9 @@ def main():
         st.markdown("---")
         if st.button("🔄 대화 초기화"):
             st.session_state["chat"] = []
-            st.session_state["messages"] = [{"role": "system", "content": "25단어 이내 한국어로 답변해"}]
+            st.session_state["messages"] = [st.session_state["messages"][0]] # 페르소나만 남기고 초기화
             st.session_state["new_question"] = False
+            st.rerun()
 
     # ── 헤더 ────────────────────────────────────────────────
     st.markdown('<h1 class="main-title">🌸 AReum Health Assistant</h1>', unsafe_allow_html=True)
@@ -242,7 +261,6 @@ def main():
     col_voice, col_tip = st.columns([1, 1])
 
     with col_voice:
-        # 스트림릿 위젯(녹음기)은 HTML <div> 태그로 감쌀 수 없으므로 제목만 표시합니다.
         st.markdown('<p class="section-title">🎙️ 음성으로 질문하기</p>', unsafe_allow_html=True)
         try:
             audio = audiorecorder(
@@ -267,7 +285,6 @@ def main():
             st.info("🎤 마이크 없음 — 아래 텍스트로 질문해주세요")
 
     with col_tip:
-        # 텍스트 요소들은 하나의 HTML 문자열로 합쳐서 카드 안에 쏙 들어가게 만듭니다.
         tip_html = """
         <div class="card">
             <p class="section-title">💡 이렇게 사용해보세요</p>
@@ -293,7 +310,6 @@ def main():
     col_text, col_answer = st.columns([1, 1])
 
     with col_text:
-        # 텍스트 입력창 역시 파이썬 위젯이므로 오류 방지를 위해 박스를 씌우지 않고 제목만 배치합니다.
         st.markdown('<p class="section-title">✉️ 텍스트로 질문하기</p>', unsafe_allow_html=True)
         user_input = st.text_input(
             label="질문입력",
@@ -312,28 +328,32 @@ def main():
                 st.session_state["new_question"] = True
 
     with col_answer:
-        # GPT 모델이 답변을 생성하는 부분
+        # GPT 답변 처리 부분
         if st.session_state["new_question"]:
             if st.session_state["OPENAI_API"]:
-                with st.spinner("🤔 생각 중..."):
+                with st.spinner("🤔 아름이가 생각 중입니다..."):
                     try:
+                        # 메모리 관리 (요금 폭탄 방지): 시스템 프롬프트 + 최근 6개 대화만 전송
+                        recent_messages = [st.session_state["messages"][0]] + st.session_state["messages"][-6:]
+                        
                         response = ask_gpt(
-                            st.session_state["messages"],
+                            recent_messages,
                             model,
                             st.session_state["OPENAI_API"]
                         )
                         now = datetime.now().strftime("%H:%M")
                         st.session_state["chat"].append(("bot", now, response))
                         st.session_state["messages"].append({"role": "assistant", "content": response})
-                        TTS(response)
+                        TTS(response) # 음성 자동 재생
                     except Exception as e:
                         st.error(f"❌ GPT 오류: {e}")
             st.session_state["new_question"] = False
 
-        # 채팅 기록을 하나의 긴 HTML 카드로 묶어서 출력 (박스 안에 글자가 들어가도록 처리)
+        # 대화 기록 렌더링
         chat_html = '<div class="card">\n<p class="section-title">💬 질문 / 답변</p>\n'
         
         if not st.session_state["chat"]:
+            # 마크다운 코드 블록 오류 방지를 위해 한 줄로 작성
             chat_html += '<div style="text-align:center; color:#ffb89a; padding: 30px 0; font-size:0.95rem;">🌸 질문을 입력하면<br>여기에 답변이 표시됩니다</div>'
         else:
             for sender, time, message in st.session_state["chat"]:
@@ -344,6 +364,7 @@ def main():
         
         chat_html += '</div>'
         st.markdown(chat_html, unsafe_allow_html=True)
+
 
 if __name__ == "__main__":
     main()
